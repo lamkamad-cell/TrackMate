@@ -42,7 +42,7 @@ This repo now includes Supabase persistence and `/api/check-heartbeats` for sche
 - `TURN_USERNAME`
 - `TURN_CREDENTIAL`
 
-TrackMate includes public STUN servers by default. For devices on different mobile networks, corporate Wi-Fi, or symmetric NAT, add a TURN service such as Twilio Network Traversal or Metered TURN and set the TURN variables above.
+TrackMate includes public STUN servers and an Open Relay TURN fallback by default for prototypes. For production or heavy testing, use your own TURN service such as Twilio Network Traversal or Metered TURN and set the TURN variables above.
 
 ## Deploy Steps
 
