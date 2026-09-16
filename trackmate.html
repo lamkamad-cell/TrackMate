@@ -36,8 +36,10 @@
     const HEARTBEAT_INTERVAL_MS = 2000;
     const HEARTBEAT_TIMEOUT_MS = 8000;
     const HEARTBEAT_API_INTERVAL_MS = 5000;
+    const ROLE_STORAGE_KEY = 'trackmate_role';
     const TRACKED_PEER_ID_STORAGE_KEY = 'trackmate_tracked_peer_id';
     const MONITOR_ID_STORAGE_KEY = 'trackmate_monitor_id';
+    const MONITOR_TARGET_ID_STORAGE_KEY = 'trackmate_monitor_target_id';
     const AUTO_MEDIA_CONSENT_STORAGE_KEY = 'trackmate_auto_media_consent';
     const KEEP_AWAKE_STORAGE_KEY = 'trackmate_keep_awake';
     const DEFAULT_ICE_SERVERS = [
@@ -75,6 +77,15 @@
       const peerId = generateId();
       localStorage.setItem(TRACKED_PEER_ID_STORAGE_KEY, peerId);
       return peerId;
+    }
+
+    function getStoredRole() {
+      const storedRole = localStorage.getItem(ROLE_STORAGE_KEY);
+      return storedRole === 'monitor' || storedRole === 'tracked' ? storedRole : null;
+    }
+
+    function mediaLabel(type) {
+      return type === 'audio' ? 'Audio' : type === 'camera-back' ? 'Kamera Belakang' : 'Kamera Depan';
     }
 
     function urlBase64ToUint8Array(base64String) {
@@ -149,15 +160,26 @@
     }
 
     function App() {
-      const [role, setRole] = useState(null);
+      const [role, setRoleState] = useState(getStoredRole);
       const [peer, setPeer] = useState(null);
       const [peerId, setPeerId] = useState(null);
+      const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
+
+      const setRole = (nextRole) => {
+        localStorage.setItem(ROLE_STORAGE_KEY, nextRole);
+        setRoleState(nextRole);
+      };
 
       const resetRole = () => {
-        setRole(null);
+        localStorage.removeItem(ROLE_STORAGE_KEY);
+        localStorage.removeItem(MONITOR_TARGET_ID_STORAGE_KEY);
+        setShowLogoutConfirm(false);
+        setRoleState(null);
         setPeer(null);
         setPeerId(null);
       };
+
+      const requestLogout = () => setShowLogoutConfirm(true);
 
       useEffect(() => {
         if (role) {
@@ -201,9 +223,30 @@
         return <LoginScreen setRole={setRole} />;
       }
       
-      return role === 'monitor' ?
-        <MonitorDashboard peer={peer} resetRole={resetRole} /> :
-        <TrackedDashboard peer={peer} peerId={peerId} resetRole={resetRole} />;
+      const dashboard = role === 'monitor' ?
+        <MonitorDashboard peer={peer} requestLogout={requestLogout} /> :
+        <TrackedDashboard peer={peer} peerId={peerId} requestLogout={requestLogout} />;
+
+      return (
+        <>
+          {dashboard}
+          {showLogoutConfirm && (
+            <div className="absolute inset-0 bg-slate-900/70 backdrop-blur-sm z-[100] flex items-center justify-center p-6 fade-in">
+              <div className="bg-white rounded-3xl p-6 w-full max-w-sm shadow-2xl text-center">
+                <div className="bg-red-100 text-red-600 w-14 h-14 rounded-full flex items-center justify-center mx-auto mb-4">
+                  <i className="fa-solid fa-right-from-bracket text-2xl"></i>
+                </div>
+                <h3 className="text-xl font-bold text-slate-800 mb-2">Keluar dari sesi?</h3>
+                <p className="text-sm text-slate-500 mb-6">Sesi tersimpan saat refresh. Keluar akan menghapus mode dan target tersimpan di perangkat ini.</p>
+                <div className="space-y-3">
+                  <button onClick={resetRole} className="w-full bg-red-600 hover:bg-red-700 text-white py-3 rounded-xl font-bold">Ya, Keluar</button>
+                  <button onClick={() => setShowLogoutConfirm(false)} className="w-full bg-slate-100 hover:bg-slate-200 text-slate-700 py-3 rounded-xl font-bold">Batal</button>
+                </div>
+              </div>
+            </div>
+          )}
+        </>
+      );
     }
 
     function LoginScreen({ setRole }) {
@@ -215,7 +258,7 @@
             </div>
             <h1 className="text-3xl font-bold text-center mb-2">TrackMate</h1>
             <p className="text-slate-400 text-center mb-2 text-sm">Realtime Consent-based Safety</p>
-            <p className="text-slate-500 text-center mb-8 text-xs font-bold tracking-wider">TrackMate v4</p>
+            <p className="text-slate-500 text-center mb-8 text-xs font-bold tracking-wider">TrackMate v5</p>
             
             <div className="space-y-4">
               <button onClick={() => setRole('monitor')} className="w-full bg-blue-600 hover:bg-blue-500 text-white p-4 rounded-xl font-medium transition-all flex items-center justify-center gap-3">
@@ -233,8 +276,8 @@
       );
     }
 
-    function MonitorDashboard({ peer, resetRole }) {
-      const [targetId, setTargetId] = useState('');
+    function MonitorDashboard({ peer, requestLogout }) {
+      const [targetId, setTargetId] = useState(localStorage.getItem(MONITOR_TARGET_ID_STORAGE_KEY) || '');
       const [conn, setConn] = useState(null);
       const [trackedUser, setTrackedUser] = useState({});
       const [alerts, setAlerts] = useState([]);
@@ -253,6 +296,7 @@
       const heartbeatNotifiedRef = useRef(false);
       const monitorIdRef = useRef(getOrCreateMonitorId());
       const connectTimeoutRef = useRef(null);
+      const didRestoreConnectionRef = useRef(false);
 
       const syncPushWatch = useCallback(async (targetPeerId) => {
         if (!canUseNotifications() || !('serviceWorker' in navigator) || !('PushManager' in window)) {
@@ -328,6 +372,7 @@
           }
 
           if (connectTimeoutRef.current) clearTimeout(connectTimeoutRef.current);
+          localStorage.setItem(MONITOR_TARGET_ID_STORAGE_KEY, cleanTargetId);
           setConnectionStatus('connecting');
           setConnectionMessage(`Menghubungkan ke User B ${cleanTargetId}... Pastikan User B membuka TrackMate.`);
 
@@ -389,6 +434,13 @@
              setTrackedUser(prev => ({ ...prev, online: false }));
           });
        };
+
+      useEffect(() => {
+        if (!peer?.open || !targetId || conn || didRestoreConnectionRef.current) return;
+        didRestoreConnectionRef.current = true;
+        setConnectionMessage('Memulihkan sesi pemantau tersimpan...');
+        connect();
+      }, [peer?.open, targetId, conn]);
 
       useEffect(() => {
          if (!peer) return;
@@ -455,7 +507,11 @@
                      placeholder="Contoh: A1B2" 
                      className="w-full p-4 text-center text-2xl font-bold uppercase tracking-widest bg-slate-100 rounded-xl mb-4 border-2 border-transparent focus:border-blue-500 outline-none"
                      value={targetId}
-                     onChange={(e) => setTargetId(e.target.value)}
+                     onChange={(e) => {
+                       const nextTargetId = e.target.value.toUpperCase();
+                       setTargetId(nextTargetId);
+                       localStorage.setItem(MONITOR_TARGET_ID_STORAGE_KEY, nextTargetId);
+                     }}
                      maxLength={4}
                   />
                   <button
@@ -479,8 +535,8 @@
                   {pushStatus === 'failed' && (
                     <p className="text-xs text-red-600 text-center mt-3">Push belum aktif. Jalankan lewat server TrackMate.</p>
                   )}
-                  <button onClick={resetRole} className="w-full mt-3 text-slate-500 hover:text-slate-700 text-xs font-bold">
-                    Ganti Mode
+                  <button onClick={requestLogout} className="w-full mt-3 text-slate-500 hover:text-slate-700 text-xs font-bold">
+                    Keluar
                   </button>
                 </div>
             </div>
@@ -502,8 +558,8 @@
               <h2 className="text-xl font-bold flex items-center gap-2">
                 <i className="fa-solid fa-eye"></i> Dashboard Pemantau
               </h2>
-              <button onClick={resetRole} className="bg-white/15 hover:bg-white/25 px-3 py-2 rounded-xl text-xs font-bold border border-white/20">
-                Ganti Mode
+              <button onClick={requestLogout} className="bg-white/15 hover:bg-white/25 px-3 py-2 rounded-xl text-xs font-bold border border-white/20">
+                Keluar
               </button>
             </div>
             <div className="flex items-center justify-between mt-3">
@@ -632,7 +688,7 @@
       );
     }
 
-    function TrackedDashboard({ peer, peerId, resetRole }) {
+    function TrackedDashboard({ peer, peerId, requestLogout }) {
       const [conn, setConn] = useState(null);
       const [locationShared, setLocationShared] = useState(false);
       const [coords, setCoords] = useState(null);
@@ -646,6 +702,8 @@
         localStorage.getItem(KEEP_AWAKE_STORAGE_KEY) === 'true'
       );
       const [wakeLockActive, setWakeLockActive] = useState(false);
+      const [torchSupported, setTorchSupported] = useState(false);
+      const [torchEnabled, setTorchEnabled] = useState(false);
       
       const mediaStreamRef = useRef(null);
       const currentCallRef = useRef(null);
@@ -669,6 +727,8 @@
           }
           setActiveMedia(null);
           setMediaRequest(null);
+          setTorchSupported(false);
+          setTorchEnabled(false);
           if (notifyMonitor && connRef.current?.open) {
              connRef.current.send({ type: 'MEDIA_RESPONSE', payload: { status: 'ended' } });
           }
@@ -727,12 +787,18 @@
          try {
             stopMedia(false);
             const stream = await navigator.mediaDevices.getUserMedia({
-               video: requestedMedia === 'camera',
+               video: requestedMedia === 'camera-back'
+                 ? { facingMode: { ideal: 'environment' } }
+                 : requestedMedia === 'camera',
                audio: requestedMedia === 'audio'
             });
             mediaStreamRef.current = stream;
             setActiveMedia(requestedMedia);
             setMediaRequest(null);
+            const videoTrack = stream.getVideoTracks()[0];
+            const capabilities = videoTrack?.getCapabilities ? videoTrack.getCapabilities() : {};
+            setTorchSupported(Boolean(capabilities?.torch));
+            setTorchEnabled(false);
             if (rememberConsent) setAutoMediaConsent(true);
             showToast(rememberConsent ? 'Izin sensor disimpan. Permintaan berikutnya otomatis diterima.' : 'Permintaan sensor otomatis diterima.');
 
@@ -776,8 +842,27 @@
             });
          };
 
-         peer.on('connection', handleConnection);
+          peer.on('connection', handleConnection);
+          return () => {
+            if (peer.off) peer.off('connection', handleConnection);
+            else if (peer.removeListener) peer.removeListener('connection', handleConnection);
+          };
       }, [peer, stopMedia, autoMediaConsent, startMediaSession]);
+
+      const toggleTorch = async () => {
+        const videoTrack = mediaStreamRef.current?.getVideoTracks()[0];
+        if (!videoTrack) return;
+
+        try {
+          const nextTorchState = !torchEnabled;
+          await videoTrack.applyConstraints({ advanced: [{ torch: nextTorchState }] });
+          setTorchEnabled(nextTorchState);
+        } catch (err) {
+          console.warn('Torch failed:', err);
+          showToast('Flash tidak didukung browser/perangkat ini.');
+          setTorchSupported(false);
+        }
+      };
 
       useEffect(() => {
          if (!conn) return;
@@ -875,7 +960,7 @@
           {(locationShared || activeMedia) && (
             <div className="sticky top-0 z-40 bg-slate-900 text-white p-2.5 text-xs font-bold flex justify-center gap-5 shadow-lg">
               {locationShared && <span className="flex items-center gap-1.5"><i className="fa-solid fa-location-dot"></i> Location Active</span>}
-              {activeMedia === 'camera' && <span className="flex items-center gap-1.5 text-red-400 animate-pulse"><i className="fa-solid fa-video"></i> Camera Active</span>}
+              {(activeMedia === 'camera' || activeMedia === 'camera-back') && <span className="flex items-center gap-1.5 text-red-400 animate-pulse"><i className="fa-solid fa-video"></i> {mediaLabel(activeMedia)} Active</span>}
               {activeMedia === 'audio' && <span className="flex items-center gap-1.5 text-red-400 animate-pulse"><i className="fa-solid fa-microphone"></i> Mic Active</span>}
             </div>
           )}
@@ -885,8 +970,8 @@
               <h2 className="text-2xl font-bold flex items-center gap-2">
                 <i className="fa-solid fa-shield-halved"></i> Mode Aman (User B)
               </h2>
-              <button onClick={resetRole} className="bg-white/15 hover:bg-white/25 px-3 py-2 rounded-xl text-xs font-bold border border-white/20">
-                Ganti Mode
+              <button onClick={requestLogout} className="bg-white/15 hover:bg-white/25 px-3 py-2 rounded-xl text-xs font-bold border border-white/20">
+                Keluar
               </button>
             </div>
             <div className="mt-4 bg-black/20 p-3 rounded-xl flex items-center justify-between">
@@ -975,8 +1060,13 @@
                   <i className="fa-solid fa-triangle-exclamation"></i> Berbagi Media Aktif
                 </h3>
                 <p className="text-sm text-red-600 mb-4 font-medium">
-                  Pemantau sedang terhubung ke {activeMedia === 'camera' ? 'Kamera' : 'Mikrofon'} Anda.
+                  Pemantau sedang terhubung ke {activeMedia === 'audio' ? 'Mikrofon' : mediaLabel(activeMedia)} Anda.
                 </p>
+                {torchSupported && activeMedia === 'camera-back' && (
+                  <button onClick={toggleTorch} className={`w-full mb-3 ${torchEnabled ? 'bg-amber-500 hover:bg-amber-600' : 'bg-slate-800 hover:bg-slate-900'} text-white py-3 rounded-xl font-bold flex items-center justify-center gap-2 shadow-md`}>
+                    <i className="fa-solid fa-bolt"></i> {torchEnabled ? 'Matikan Flash' : 'Nyalakan Flash'}
+                  </button>
+                )}
                 <button onClick={() => stopMedia()} className="w-full bg-red-600 hover:bg-red-700 text-white py-3 rounded-xl font-bold flex items-center justify-center gap-2 shadow-md">
                   <i className="fa-solid fa-circle-stop"></i> Hentikan Sekarang
                 </button>
@@ -993,7 +1083,7 @@
                 </div>
                 <h3 className="text-xl font-bold text-center text-slate-800 mb-2">Permintaan Akses</h3>
                 <p className="text-center text-slate-600 text-sm mb-6">
-                  Pemantau meminta izin untuk mengakses <strong>{mediaRequest === 'camera' ? 'Kamera Video' : 'Mikrofon'}</strong> Anda secara realtime.
+                  Pemantau meminta izin untuk mengakses <strong>{mediaRequest === 'audio' ? 'Mikrofon' : mediaLabel(mediaRequest)}</strong> Anda secara realtime.
                   Setelah Anda menekan Izinkan, persetujuan ini disimpan dan permintaan berikutnya diterima otomatis selama app aktif.
                 </p>
                 
