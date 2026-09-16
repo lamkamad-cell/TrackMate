@@ -16,7 +16,7 @@ Vercel is a good free HTTPS host for this PWA prototype.
 
 Vercel Hobby serverless functions are not a long-running Node server. The 15-second background heartbeat push detector from `server.js` is still better suited to Render, Koyeb, Fly.io, or another always-on/background-capable host.
 
-This repo now includes Supabase persistence and `/api/check-heartbeats` for scheduled checks. Vercel Cron is a background fallback, not a 15-second realtime safety loop.
+This repo now includes Supabase persistence and `/api/check-heartbeats` for scheduled checks. Vercel Hobby cron is limited to daily runs, so it is only a background fallback, not a 15-second realtime safety loop.
 
 ## Supabase Setup
 

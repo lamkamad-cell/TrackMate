@@ -1,4 +1,9 @@
 node_modules/
 .env
+vercel token.txt
+vercel env.txt
 npm-debug.log*
 .DS_Store
+
+.vercel
+.env*
