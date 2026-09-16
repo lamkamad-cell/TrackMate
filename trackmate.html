@@ -38,6 +38,8 @@
     const HEARTBEAT_API_INTERVAL_MS = 5000;
     const TRACKED_PEER_ID_STORAGE_KEY = 'trackmate_tracked_peer_id';
     const MONITOR_ID_STORAGE_KEY = 'trackmate_monitor_id';
+    const AUTO_MEDIA_CONSENT_STORAGE_KEY = 'trackmate_auto_media_consent';
+    const KEEP_AWAKE_STORAGE_KEY = 'trackmate_keep_awake';
     const DEFAULT_ICE_SERVERS = [
       { urls: 'stun:stun.l.google.com:19302' },
       { urls: 'stun:global.stun.twilio.com:3478' },
@@ -213,7 +215,7 @@
             </div>
             <h1 className="text-3xl font-bold text-center mb-2">TrackMate</h1>
             <p className="text-slate-400 text-center mb-2 text-sm">Realtime Consent-based Safety</p>
-            <p className="text-slate-500 text-center mb-8 text-xs font-bold tracking-wider">TrackMate v3</p>
+            <p className="text-slate-500 text-center mb-8 text-xs font-bold tracking-wider">TrackMate v4</p>
             
             <div className="space-y-4">
               <button onClick={() => setRole('monitor')} className="w-full bg-blue-600 hover:bg-blue-500 text-white p-4 rounded-xl font-medium transition-all flex items-center justify-center gap-3">
@@ -637,32 +639,117 @@
       const [toast, setToast] = useState(null);
       const [mediaRequest, setMediaRequest] = useState(null);
       const [activeMedia, setActiveMedia] = useState(null);
+      const [autoMediaConsent, setAutoMediaConsent] = useState(
+        localStorage.getItem(AUTO_MEDIA_CONSENT_STORAGE_KEY) === 'true'
+      );
+      const [keepAwake, setKeepAwake] = useState(
+        localStorage.getItem(KEEP_AWAKE_STORAGE_KEY) === 'true'
+      );
+      const [wakeLockActive, setWakeLockActive] = useState(false);
       
       const mediaStreamRef = useRef(null);
       const currentCallRef = useRef(null);
       const connRef = useRef(null);
       const lastApiHeartbeatRef = useRef(0);
+      const wakeLockRef = useRef(null);
 
       const showToast = (message) => {
         setToast(message);
         setTimeout(() => setToast(null), 3000);
       };
 
-      const stopMedia = useCallback(() => {
+      const stopMedia = useCallback((notifyMonitor = true) => {
          if (mediaStreamRef.current) {
-            mediaStreamRef.current.getTracks().forEach(t => t.stop());
-            mediaStreamRef.current = null;
+             mediaStreamRef.current.getTracks().forEach(t => t.stop());
+             mediaStreamRef.current = null;
          }
          if (currentCallRef.current) {
             currentCallRef.current.close();
             currentCallRef.current = null;
-         }
-         setActiveMedia(null);
-         setMediaRequest(null);
-         if (connRef.current?.open) {
-            connRef.current.send({ type: 'MEDIA_RESPONSE', payload: { status: 'ended' } });
-         }
+          }
+          setActiveMedia(null);
+          setMediaRequest(null);
+          if (notifyMonitor && connRef.current?.open) {
+             connRef.current.send({ type: 'MEDIA_RESPONSE', payload: { status: 'ended' } });
+          }
       }, []);
+
+      useEffect(() => {
+        localStorage.setItem(AUTO_MEDIA_CONSENT_STORAGE_KEY, autoMediaConsent ? 'true' : 'false');
+      }, [autoMediaConsent]);
+
+      useEffect(() => {
+        localStorage.setItem(KEEP_AWAKE_STORAGE_KEY, keepAwake ? 'true' : 'false');
+      }, [keepAwake]);
+
+      useEffect(() => {
+        let disposed = false;
+
+        async function requestWakeLock() {
+          if (!keepAwake || !('wakeLock' in navigator) || document.visibilityState !== 'visible') {
+            return;
+          }
+
+          try {
+            wakeLockRef.current = await navigator.wakeLock.request('screen');
+            if (disposed) {
+              await wakeLockRef.current.release();
+              return;
+            }
+            setWakeLockActive(true);
+            wakeLockRef.current.addEventListener('release', () => setWakeLockActive(false));
+          } catch (err) {
+            console.warn('Wake lock failed:', err);
+            setWakeLockActive(false);
+          }
+        }
+
+        requestWakeLock();
+        const handleVisibilityChange = () => {
+          if (document.visibilityState === 'visible') requestWakeLock();
+        };
+        document.addEventListener('visibilitychange', handleVisibilityChange);
+
+        return () => {
+          disposed = true;
+          document.removeEventListener('visibilitychange', handleVisibilityChange);
+          if (wakeLockRef.current) {
+            wakeLockRef.current.release().catch(() => {});
+            wakeLockRef.current = null;
+          }
+          setWakeLockActive(false);
+        };
+      }, [keepAwake]);
+
+      const startMediaSession = useCallback(async (requestedMedia, rememberConsent = false) => {
+         if (!requestedMedia) return;
+
+         try {
+            stopMedia(false);
+            const stream = await navigator.mediaDevices.getUserMedia({
+               video: requestedMedia === 'camera',
+               audio: requestedMedia === 'audio'
+            });
+            mediaStreamRef.current = stream;
+            setActiveMedia(requestedMedia);
+            setMediaRequest(null);
+            if (rememberConsent) setAutoMediaConsent(true);
+            showToast(rememberConsent ? 'Izin sensor disimpan. Permintaan berikutnya otomatis diterima.' : 'Permintaan sensor otomatis diterima.');
+
+            if (connRef.current?.open) {
+               connRef.current.send({ type: 'MEDIA_RESPONSE', payload: { status: 'active' } });
+               const call = peer.call(connRef.current.peer, stream);
+               currentCallRef.current = call;
+            }
+         } catch (err) {
+            console.error(err);
+            showToast('Gagal mengakses sensor. Periksa izin kamera/mikrofon browser.');
+            if (connRef.current?.open) {
+               connRef.current.send({ type: 'MEDIA_RESPONSE', payload: { status: 'rejected' } });
+            }
+            setMediaRequest(null);
+         }
+      }, [peer, stopMedia]);
 
       useEffect(() => {
          if (!peer) return;
@@ -671,12 +758,16 @@
             connRef.current = connection;
             setConn(connection);
 
-            connection.on('data', (data) => {
-               if (data.type === 'REQUEST_MEDIA') {
-                  setMediaRequest(data.payload);
-               } else if (data.type === 'END_MEDIA') {
+             connection.on('data', (data) => {
+                if (data.type === 'REQUEST_MEDIA') {
+                  if (autoMediaConsent) {
+                    startMediaSession(data.payload);
+                  } else {
+                    setMediaRequest(data.payload);
+                  }
+                } else if (data.type === 'END_MEDIA') {
                   stopMedia();
-               }
+                }
             });
             connection.on('close', () => {
                connRef.current = null;
@@ -686,7 +777,7 @@
          };
 
          peer.on('connection', handleConnection);
-      }, [peer, stopMedia]);
+      }, [peer, stopMedia, autoMediaConsent, startMediaSession]);
 
       useEffect(() => {
          if (!conn) return;
@@ -763,36 +854,15 @@
       };
       
       const respondToMedia = async (accept) => {
-         if (!accept) {
-            setMediaRequest(null);
+          if (!accept) {
+             setMediaRequest(null);
             if (connRef.current?.open) {
                connRef.current.send({ type: 'MEDIA_RESPONSE', payload: { status: 'rejected' } });
             }
-            return;
-         }
-         
-         try {
-            const stream = await navigator.mediaDevices.getUserMedia({
-               video: mediaRequest === 'camera',
-               audio: mediaRequest === 'audio'
-            });
-            mediaStreamRef.current = stream;
-            setActiveMedia(mediaRequest);
-            setMediaRequest(null);
-            
-            if (connRef.current?.open) {
-               connRef.current.send({ type: 'MEDIA_RESPONSE', payload: { status: 'active' } });
-               const call = peer.call(connRef.current.peer, stream);
-               currentCallRef.current = call;
-            }
-         } catch (err) {
-            console.error(err);
-            showToast("Gagal mengakses sensor.");
-            if (connRef.current?.open) {
-               connRef.current.send({ type: 'MEDIA_RESPONSE', payload: { status: 'rejected' } });
-            }
-            setMediaRequest(null);
-         }
+             return;
+          }
+
+         await startMediaSession(mediaRequest, true);
       };
 
       if (!peerId) {
@@ -858,6 +928,46 @@
                 <div className={`bg-white w-6 h-6 rounded-full shadow-md transform transition-transform ${locationShared ? 'translate-x-6' : 'translate-x-0'}`}></div>
               </div>
             </div>
+
+            <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-200 space-y-4">
+              <div className="flex items-center justify-between gap-4">
+                <div className="flex items-center gap-4">
+                  <div className={`p-3.5 rounded-xl ${autoMediaConsent ? 'bg-emerald-100 text-emerald-600' : 'bg-slate-100 text-slate-400'}`}>
+                    <i className="fa-solid fa-camera-retro text-2xl"></i>
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-slate-800 text-base">Izin Kamera/Mik Otomatis</h3>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      {autoMediaConsent ? 'Permintaan berikutnya otomatis diterima' : 'Tekan Izinkan sekali untuk menyimpan persetujuan'}
+                    </p>
+                  </div>
+                </div>
+                <div onClick={() => setAutoMediaConsent(!autoMediaConsent)} className={`w-14 h-8 flex items-center rounded-full p-1 cursor-pointer transition-colors ${autoMediaConsent ? 'bg-emerald-500' : 'bg-slate-300'}`}>
+                  <div className={`bg-white w-6 h-6 rounded-full shadow-md transform transition-transform ${autoMediaConsent ? 'translate-x-6' : 'translate-x-0'}`}></div>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between gap-4 pt-4 border-t border-slate-100">
+                <div className="flex items-center gap-4">
+                  <div className={`p-3.5 rounded-xl ${wakeLockActive ? 'bg-amber-100 text-amber-600' : 'bg-slate-100 text-slate-400'}`}>
+                    <i className="fa-solid fa-mobile-screen-button text-2xl"></i>
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-slate-800 text-base">Jaga Layar Tetap Aktif</h3>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      {wakeLockActive ? 'Aktif selama tab terlihat' : 'Mencegah layar tidur jika browser mendukung'}
+                    </p>
+                  </div>
+                </div>
+                <div onClick={() => setKeepAwake(!keepAwake)} className={`w-14 h-8 flex items-center rounded-full p-1 cursor-pointer transition-colors ${keepAwake ? 'bg-amber-500' : 'bg-slate-300'}`}>
+                  <div className={`bg-white w-6 h-6 rounded-full shadow-md transform transition-transform ${keepAwake ? 'translate-x-6' : 'translate-x-0'}`}></div>
+                </div>
+              </div>
+
+              <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-xl p-3 leading-relaxed">
+                Browser mobile bisa menghentikan kamera, mikrofon, WebRTC, dan JavaScript saat layar benar-benar dikunci. Mode ini menjaga layar tetap aktif jika didukung, bukan menjalankan kamera/mikrofon penuh saat lock screen.
+              </p>
+            </div>
             
             {activeMedia && (
               <div className="bg-red-50 border border-red-200 p-5 rounded-2xl shadow-sm fade-in">
@@ -884,6 +994,7 @@
                 <h3 className="text-xl font-bold text-center text-slate-800 mb-2">Permintaan Akses</h3>
                 <p className="text-center text-slate-600 text-sm mb-6">
                   Pemantau meminta izin untuk mengakses <strong>{mediaRequest === 'camera' ? 'Kamera Video' : 'Mikrofon'}</strong> Anda secara realtime.
+                  Setelah Anda menekan Izinkan, persetujuan ini disimpan dan permintaan berikutnya diterima otomatis selama app aktif.
                 </p>
                 
                 <div className="space-y-3">
