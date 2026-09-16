@@ -36,6 +36,8 @@
     const HEARTBEAT_INTERVAL_MS = 2000;
     const HEARTBEAT_TIMEOUT_MS = 8000;
     const HEARTBEAT_API_INTERVAL_MS = 5000;
+    const ROLE_STORAGE_KEY = 'trackmate_role';
+    const TRACKED_PEER_ID_STORAGE_KEY = 'trackmate_tracked_peer_id';
     const MONITOR_ID_STORAGE_KEY = 'trackmate_monitor_id';
 
     const generateId = () => Math.random().toString(36).substring(2, 6).toUpperCase();
@@ -50,6 +52,20 @@
       const monitorId = generateMonitorId();
       localStorage.setItem(MONITOR_ID_STORAGE_KEY, monitorId);
       return monitorId;
+    }
+
+    function getOrCreateTrackedPeerId() {
+      const existingId = localStorage.getItem(TRACKED_PEER_ID_STORAGE_KEY);
+      if (existingId) return existingId;
+
+      const peerId = generateId();
+      localStorage.setItem(TRACKED_PEER_ID_STORAGE_KEY, peerId);
+      return peerId;
+    }
+
+    function getStoredRole() {
+      const storedRole = localStorage.getItem(ROLE_STORAGE_KEY);
+      return storedRole === 'monitor' || storedRole === 'tracked' ? storedRole : null;
     }
 
     function urlBase64ToUint8Array(base64String) {
@@ -103,14 +119,24 @@
     }
 
     function App() {
-      const [role, setRole] = useState(null);
+      const [role, setRoleState] = useState(getStoredRole);
       const [peer, setPeer] = useState(null);
       const [peerId, setPeerId] = useState(null);
 
+      const setRole = (nextRole) => {
+        localStorage.setItem(ROLE_STORAGE_KEY, nextRole);
+        setRoleState(nextRole);
+      };
+
+      const resetRole = () => {
+        localStorage.removeItem(ROLE_STORAGE_KEY);
+        setRoleState(null);
+        setPeerId(null);
+      };
+
       useEffect(() => {
         if (role) {
-          // Buat Peer dengan ID pendek jika User B, atau random jika User A
-          const customId = role === 'tracked' ? generateId() : null;
+          const customId = role === 'tracked' ? getOrCreateTrackedPeerId() : null;
           const newPeer = customId ? new Peer(customId) : new Peer();
           
           newPeer.on('open', (id) => {
@@ -119,7 +145,16 @@
           
           newPeer.on('error', (err) => {
              console.error("PeerJS Error:", err);
-             alert("Koneksi gagal: " + err.type);
+             if (err.type === 'unavailable-id' && role === 'tracked') {
+               localStorage.removeItem(TRACKED_PEER_ID_STORAGE_KEY);
+               alert('ID User B bentrok. Muat ulang untuk membuat ID baru.');
+             } else if (err.type === 'peer-unavailable') {
+               alert('User B tidak ditemukan. Pastikan ID benar dan User B masih membuka TrackMate.');
+             } else if (err.type === 'network' || err.type === 'socket-error') {
+               alert('Koneksi PeerJS terputus. Periksa internet lalu coba lagi.');
+             } else {
+               alert("Koneksi gagal: " + err.type);
+             }
           });
 
           setPeer(newPeer);
@@ -134,9 +169,9 @@
         return <LoginScreen setRole={setRole} />;
       }
       
-      return role === 'monitor' ? 
-        <MonitorDashboard peer={peer} /> : 
-        <TrackedDashboard peer={peer} peerId={peerId} />;
+      return role === 'monitor' ?
+        <MonitorDashboard peer={peer} resetRole={resetRole} /> :
+        <TrackedDashboard peer={peer} peerId={peerId} resetRole={resetRole} />;
     }
 
     function LoginScreen({ setRole }) {
@@ -165,7 +200,7 @@
       );
     }
 
-    function MonitorDashboard({ peer }) {
+    function MonitorDashboard({ peer, resetRole }) {
       const [targetId, setTargetId] = useState('');
       const [conn, setConn] = useState(null);
       const [trackedUser, setTrackedUser] = useState({});
@@ -197,6 +232,9 @@
         try {
           setPushStatus('syncing');
           const config = await fetch('./api/push/public-key').then((response) => response.json());
+          if (!config.publicKey) {
+            throw new Error(config.warning || 'VAPID public key is not configured');
+          }
           const registration = await navigator.serviceWorker.ready;
           let subscription = await registration.pushManager.getSubscription();
 
@@ -359,7 +397,10 @@
                   {pushStatus === 'failed' && (
                     <p className="text-xs text-red-600 text-center mt-3">Push belum aktif. Jalankan lewat server TrackMate.</p>
                   )}
-               </div>
+                  <button onClick={resetRole} className="w-full mt-3 text-slate-500 hover:text-slate-700 text-xs font-bold">
+                    Ganti Mode
+                  </button>
+                </div>
             </div>
          );
       }
@@ -504,7 +545,7 @@
       );
     }
 
-    function TrackedDashboard({ peer, peerId }) {
+    function TrackedDashboard({ peer, peerId, resetRole }) {
       const [conn, setConn] = useState(null);
       const [locationShared, setLocationShared] = useState(false);
       const [coords, setCoords] = useState(null);
@@ -697,6 +738,9 @@
                   {conn ? 'TERHUBUNG' : 'MENUNGGU'}
                </div>
             </div>
+            <button onClick={resetRole} className="mt-3 text-xs font-bold text-white/80 hover:text-white underline">
+              Ganti Mode
+            </button>
           </div>
 
           <div className="p-5 space-y-5">
