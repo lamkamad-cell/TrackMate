@@ -1,4 +1,4 @@
-const CACHE_NAME = 'trackmate-pwa-v6';
+const CACHE_NAME = 'trackmate-pwa-v7';
 const APP_SHELL = [
   './trackmate.html',
   './manifest.webmanifest',

@@ -258,7 +258,7 @@
             </div>
             <h1 className="text-3xl font-bold text-center mb-2">TrackMate</h1>
             <p className="text-slate-400 text-center mb-2 text-sm">Realtime Consent-based Safety</p>
-            <p className="text-slate-500 text-center mb-8 text-xs font-bold tracking-wider">TrackMate v6</p>
+            <p className="text-slate-500 text-center mb-8 text-xs font-bold tracking-wider">TrackMate v7</p>
             
             <div className="space-y-4">
               <button onClick={() => setRole('monitor')} className="w-full bg-blue-600 hover:bg-blue-500 text-white p-4 rounded-xl font-medium transition-all flex items-center justify-center gap-3">
@@ -418,10 +418,21 @@
                   showLocalNotification('TrackMate SOS', { body: data.payload.message });
                }
             } else if (data.type === 'MEDIA_RESPONSE') {
-               setMediaSession(prev => ({...prev, status: data.payload.status}));
+               setMediaSession(prev => ({
+                 ...(prev || {}),
+                 ...data.payload,
+                 type: data.payload.type || prev?.type,
+                 status: data.payload.status
+               }));
                if (data.payload.status === 'rejected' || data.payload.status === 'ended') {
                   if (videoRef.current) videoRef.current.srcObject = null;
                }
+            } else if (data.type === 'TORCH_STATUS') {
+               setMediaSession(prev => prev ? {
+                 ...prev,
+                 torchSupported: Boolean(data.payload.supported),
+                 torchEnabled: Boolean(data.payload.enabled)
+               } : prev);
             }
          });
 
@@ -503,8 +514,13 @@
       }, [conn, pushAlert]);
       
       const requestMedia = (type) => {
-        setMediaSession({ type: type, status: 'pending', timestamp: Date.now() });
+        setMediaSession({ type: type, status: 'pending', timestamp: Date.now(), torchSupported: false, torchEnabled: false });
         if (conn?.open) conn.send({ type: 'REQUEST_MEDIA', payload: type });
+      };
+
+      const toggleRemoteTorch = () => {
+        if (!conn?.open) return;
+        conn.send({ type: 'TOGGLE_TORCH' });
       };
 
       const endMediaSession = () => {
@@ -669,7 +685,17 @@
 
               {mediaSession?.status === 'active' ? (
                 <div className="bg-slate-900 rounded-xl p-4 flex flex-col items-center text-white">
-                   <p className="text-sm font-bold mb-3 text-emerald-400">Sesi {mediaSession.type === 'camera' ? 'Kamera' : 'Audio'} Aktif</p>
+                   <p className="text-sm font-bold mb-3 text-emerald-400">Sesi {mediaLabel(mediaSession.type)} Aktif</p>
+                   {(mediaSession.type === 'camera' || mediaSession.type === 'camera-back') && (
+                     <div className="grid grid-cols-2 gap-3 w-full mb-3">
+                       <button onClick={() => requestMedia(mediaSession.type === 'camera-back' ? 'camera' : 'camera-back')} className="bg-blue-500 hover:bg-blue-600 text-white px-4 py-2.5 rounded-lg text-sm font-bold flex justify-center items-center gap-2 transition-colors">
+                         <i className="fa-solid fa-camera-rotate"></i> {mediaSession.type === 'camera-back' ? 'Kamera Depan' : 'Kamera Belakang'}
+                       </button>
+                       <button onClick={toggleRemoteTorch} disabled={!mediaSession.torchSupported} className={`${mediaSession.torchSupported ? (mediaSession.torchEnabled ? 'bg-amber-500 hover:bg-amber-600' : 'bg-slate-700 hover:bg-slate-600') : 'bg-slate-700/50 cursor-not-allowed'} text-white px-4 py-2.5 rounded-lg text-sm font-bold flex justify-center items-center gap-2 transition-colors`}>
+                         <i className="fa-solid fa-bolt"></i> {mediaSession.torchSupported ? (mediaSession.torchEnabled ? 'Matikan Flash' : 'Nyalakan Flash') : 'Flash Tidak Ada'}
+                       </button>
+                     </div>
+                   )}
                    <button onClick={endMediaSession} className="w-full bg-red-500 hover:bg-red-600 text-white px-5 py-2.5 rounded-lg text-sm font-bold flex justify-center items-center gap-2 transition-colors">
                      <i className="fa-solid fa-circle-stop"></i> Akhiri Sesi
                    </button>
@@ -687,14 +713,18 @@
                         Akses ditolak oleh User B.
                      </div>
                   )}
-                  <div className="flex gap-3">
+                  <div className="grid grid-cols-3 gap-3">
                     <button onClick={() => requestMedia('camera')} className="flex-1 bg-blue-50 hover:bg-blue-100 text-blue-700 p-4 rounded-xl flex flex-col items-center justify-center gap-2 border border-blue-100 transition-colors">
                       <i className="fa-solid fa-video text-xl"></i>
-                      <span className="text-xs font-bold">Request Camera</span>
+                      <span className="text-xs font-bold">Kamera Depan</span>
+                    </button>
+                    <button onClick={() => requestMedia('camera-back')} className="flex-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 p-4 rounded-xl flex flex-col items-center justify-center gap-2 border border-emerald-100 transition-colors">
+                      <i className="fa-solid fa-camera-rotate text-xl"></i>
+                      <span className="text-xs font-bold">Kamera Belakang</span>
                     </button>
                     <button onClick={() => requestMedia('audio')} className="flex-1 bg-purple-50 hover:bg-purple-100 text-purple-700 p-4 rounded-xl flex flex-col items-center justify-center gap-2 border border-purple-100 transition-colors">
                       <i className="fa-solid fa-microphone text-xl"></i>
-                      <span className="text-xs font-bold">Request Audio</span>
+                      <span className="text-xs font-bold">Audio</span>
                     </button>
                   </div>
                 </div>
@@ -727,6 +757,7 @@
       const connRef = useRef(null);
       const lastApiHeartbeatRef = useRef(0);
       const wakeLockRef = useRef(null);
+      const torchEnabledRef = useRef(false);
 
       const showToast = (message) => {
         setToast(message);
@@ -746,6 +777,7 @@
           setMediaRequest(null);
           setTorchSupported(false);
           setTorchEnabled(false);
+          torchEnabledRef.current = false;
           if (notifyMonitor && connRef.current?.open) {
              connRef.current.send({ type: 'MEDIA_RESPONSE', payload: { status: 'ended' } });
           }
@@ -816,11 +848,20 @@
             const capabilities = videoTrack?.getCapabilities ? videoTrack.getCapabilities() : {};
             setTorchSupported(Boolean(capabilities?.torch));
             setTorchEnabled(false);
+            torchEnabledRef.current = false;
             if (rememberConsent) setAutoMediaConsent(true);
             showToast(rememberConsent ? 'Izin sensor disimpan. Permintaan berikutnya otomatis diterima.' : 'Permintaan sensor otomatis diterima.');
 
             if (connRef.current?.open) {
-               connRef.current.send({ type: 'MEDIA_RESPONSE', payload: { status: 'active' } });
+               connRef.current.send({
+                 type: 'MEDIA_RESPONSE',
+                 payload: {
+                   status: 'active',
+                   type: requestedMedia,
+                   torchSupported: Boolean(capabilities?.torch),
+                   torchEnabled: false
+                 }
+               });
                const call = peer.call(connRef.current.peer, stream);
                currentCallRef.current = call;
             }
@@ -843,13 +884,15 @@
 
              connection.on('data', (data) => {
                 if (data.type === 'REQUEST_MEDIA') {
-                  if (autoMediaConsent) {
+                  if (activeMedia || autoMediaConsent) {
                     startMediaSession(data.payload);
                   } else {
                     setMediaRequest(data.payload);
                   }
                 } else if (data.type === 'END_MEDIA') {
-                  stopMedia();
+                   stopMedia();
+                } else if (data.type === 'TOGGLE_TORCH') {
+                   toggleTorch();
                 }
             });
             connection.on('close', () => {
@@ -864,20 +907,27 @@
             if (peer.off) peer.off('connection', handleConnection);
             else if (peer.removeListener) peer.removeListener('connection', handleConnection);
           };
-      }, [peer, stopMedia, autoMediaConsent, startMediaSession]);
+      }, [peer, stopMedia, autoMediaConsent, activeMedia, startMediaSession]);
 
       const toggleTorch = async () => {
         const videoTrack = mediaStreamRef.current?.getVideoTracks()[0];
         if (!videoTrack) return;
 
         try {
-          const nextTorchState = !torchEnabled;
+          const nextTorchState = !torchEnabledRef.current;
           await videoTrack.applyConstraints({ advanced: [{ torch: nextTorchState }] });
+          torchEnabledRef.current = nextTorchState;
           setTorchEnabled(nextTorchState);
+          if (connRef.current?.open) {
+            connRef.current.send({ type: 'TORCH_STATUS', payload: { supported: true, enabled: nextTorchState } });
+          }
         } catch (err) {
           console.warn('Torch failed:', err);
           showToast('Flash tidak didukung browser/perangkat ini.');
           setTorchSupported(false);
+          if (connRef.current?.open) {
+            connRef.current.send({ type: 'TORCH_STATUS', payload: { supported: false, enabled: false } });
+          }
         }
       };
 
@@ -1096,7 +1146,7 @@
             <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-6 fade-in">
               <div className="bg-white rounded-3xl p-6 w-full max-w-sm shadow-2xl">
                 <div className="bg-amber-100 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 text-amber-600">
-                  <i className={`fa-solid ${mediaRequest === 'camera' ? 'fa-video' : 'fa-microphone'} text-3xl`}></i>
+                  <i className={`fa-solid ${mediaRequest === 'audio' ? 'fa-microphone' : 'fa-video'} text-3xl`}></i>
                 </div>
                 <h3 className="text-xl font-bold text-center text-slate-800 mb-2">Permintaan Akses</h3>
                 <p className="text-center text-slate-600 text-sm mb-6">
