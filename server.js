@@ -7,7 +7,7 @@ const PORT = Number(process.env.PORT || 8765);
 const HOST = process.env.HOST || '0.0.0.0';
 const HEARTBEAT_TIMEOUT_MS = Number(process.env.HEARTBEAT_TIMEOUT_MS || 15000);
 const CHECK_INTERVAL_MS = Number(process.env.CHECK_INTERVAL_MS || 3000);
-const PUBLIC_DIR = __dirname;
+const PUBLIC_DIR = path.resolve(__dirname);
 
 const vapidKeys =
   process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY
@@ -143,10 +143,10 @@ function contentTypeFor(filePath) {
 
 function serveStatic(req, res) {
   const requestUrl = new URL(req.url, `http://${req.headers.host}`);
-  const pathname = requestUrl.pathname === '/' ? '/trackmate.html' : requestUrl.pathname;
-  const filePath = path.normalize(path.join(PUBLIC_DIR, pathname));
+  const pathname = requestUrl.pathname === '/' || requestUrl.pathname === '/index.html' ? '/trackmate.html' : requestUrl.pathname;
+  const filePath = path.resolve(PUBLIC_DIR, `.${pathname}`);
 
-  if (!filePath.startsWith(PUBLIC_DIR)) {
+  if (filePath !== PUBLIC_DIR && !filePath.startsWith(`${PUBLIC_DIR}${path.sep}`)) {
     res.writeHead(403);
     res.end('Forbidden');
     return;
@@ -219,7 +219,8 @@ setInterval(checkHeartbeats, CHECK_INTERVAL_MS);
 
 server.listen(PORT, HOST, () => {
   const displayHost = HOST === '0.0.0.0' ? '127.0.0.1' : HOST;
-  console.log(`TrackMate running at http://${displayHost}:${PORT}/trackmate.html`);
+  console.log(`TrackMate running at http://${displayHost}:${PORT}/`);
+  console.log(`Health check: http://${displayHost}:${PORT}/api/health`);
   if (!process.env.VAPID_PUBLIC_KEY || !process.env.VAPID_PRIVATE_KEY) {
     console.log('Using temporary VAPID keys. Set VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY for production.');
   }
