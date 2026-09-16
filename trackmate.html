@@ -258,7 +258,7 @@
             </div>
             <h1 className="text-3xl font-bold text-center mb-2">TrackMate</h1>
             <p className="text-slate-400 text-center mb-2 text-sm">Realtime Consent-based Safety</p>
-            <p className="text-slate-500 text-center mb-8 text-xs font-bold tracking-wider">TrackMate v5</p>
+            <p className="text-slate-500 text-center mb-8 text-xs font-bold tracking-wider">TrackMate v6</p>
             
             <div className="space-y-4">
               <button onClick={() => setRole('monitor')} className="w-full bg-blue-600 hover:bg-blue-500 text-white p-4 rounded-xl font-medium transition-all flex items-center justify-center gap-3">
@@ -277,7 +277,8 @@
     }
 
     function MonitorDashboard({ peer, requestLogout }) {
-      const [targetId, setTargetId] = useState(localStorage.getItem(MONITOR_TARGET_ID_STORAGE_KEY) || '');
+      const restoredTargetIdRef = useRef(localStorage.getItem(MONITOR_TARGET_ID_STORAGE_KEY) || '');
+      const [targetId, setTargetId] = useState(restoredTargetIdRef.current);
       const [conn, setConn] = useState(null);
       const [trackedUser, setTrackedUser] = useState({});
       const [alerts, setAlerts] = useState([]);
@@ -297,6 +298,7 @@
       const monitorIdRef = useRef(getOrCreateMonitorId());
       const connectTimeoutRef = useRef(null);
       const didRestoreConnectionRef = useRef(false);
+      const didEditTargetRef = useRef(false);
 
       const syncPushWatch = useCallback(async (targetPeerId) => {
         if (!canUseNotifications() || !('serviceWorker' in navigator) || !('PushManager' in window)) {
@@ -365,6 +367,12 @@
              return;
           }
 
+          if (cleanTargetId.length !== 4) {
+             setConnectionStatus('failed');
+             setConnectionMessage('ID User B harus 4 karakter. Selesaikan input lalu tekan Hubungkan.');
+             return;
+          }
+
           if (!peer || !peer.open || peer.destroyed || peer.disconnected) {
              setConnectionStatus('failed');
              setConnectionMessage('Koneksi pemantau belum siap. Tunggu beberapa detik lalu coba lagi.');
@@ -372,7 +380,6 @@
           }
 
           if (connectTimeoutRef.current) clearTimeout(connectTimeoutRef.current);
-          localStorage.setItem(MONITOR_TARGET_ID_STORAGE_KEY, cleanTargetId);
           setConnectionStatus('connecting');
           setConnectionMessage(`Menghubungkan ke User B ${cleanTargetId}... Pastikan User B membuka TrackMate.`);
 
@@ -388,6 +395,8 @@
              if (connectTimeoutRef.current) clearTimeout(connectTimeoutRef.current);
              setConnectionStatus('connected');
              setConnectionMessage('Terhubung. Menunggu heartbeat User B...');
+             localStorage.setItem(MONITOR_TARGET_ID_STORAGE_KEY, cleanTargetId);
+             restoredTargetIdRef.current = cleanTargetId;
              setConn(connection);
              setHeartbeatLost(false);
              lastHeartbeatRef.current = Date.now();
@@ -436,7 +445,15 @@
        };
 
       useEffect(() => {
-        if (!peer?.open || !targetId || conn || didRestoreConnectionRef.current) return;
+        if (
+          !peer?.open ||
+          !restoredTargetIdRef.current ||
+          targetId !== restoredTargetIdRef.current ||
+          targetId.length !== 4 ||
+          conn ||
+          didRestoreConnectionRef.current ||
+          didEditTargetRef.current
+        ) return;
         didRestoreConnectionRef.current = true;
         setConnectionMessage('Memulihkan sesi pemantau tersimpan...');
         connect();
@@ -509,8 +526,8 @@
                      value={targetId}
                      onChange={(e) => {
                        const nextTargetId = e.target.value.toUpperCase();
+                       didEditTargetRef.current = true;
                        setTargetId(nextTargetId);
-                       localStorage.setItem(MONITOR_TARGET_ID_STORAGE_KEY, nextTargetId);
                      }}
                      maxLength={4}
                   />
