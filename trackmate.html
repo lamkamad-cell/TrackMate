@@ -249,6 +249,8 @@
       const [mediaSession, setMediaSession] = useState(null);
       const [lastHeartbeat, setLastHeartbeat] = useState(null);
       const [heartbeatLost, setHeartbeatLost] = useState(false);
+      const [connectionStatus, setConnectionStatus] = useState('idle');
+      const [connectionMessage, setConnectionMessage] = useState('');
       const [notificationPermission, setNotificationPermission] = useState(
         canUseNotifications() ? Notification.permission : 'unsupported'
       );
@@ -258,6 +260,7 @@
       const lastHeartbeatRef = useRef(null);
       const heartbeatNotifiedRef = useRef(false);
       const monitorIdRef = useRef(getOrCreateMonitorId());
+      const connectTimeoutRef = useRef(null);
 
       const syncPushWatch = useCallback(async (targetPeerId) => {
         if (!canUseNotifications() || !('serviceWorker' in navigator) || !('PushManager' in window)) {
@@ -312,16 +315,45 @@
         setAlerts(prev => [alertPayload, ...prev].slice(0, 5));
       }, []);
 
-      const connect = () => {
-         const cleanTargetId = targetId.trim().toUpperCase();
-         if (!peer || !cleanTargetId) return;
+      useEffect(() => {
+        return () => {
+          if (connectTimeoutRef.current) clearTimeout(connectTimeoutRef.current);
+        };
+      }, []);
 
-         const connection = peer.connect(cleanTargetId);
-         
-         connection.on('open', () => {
-            setConn(connection);
-            setHeartbeatLost(false);
-            lastHeartbeatRef.current = Date.now();
+      const connect = () => {
+          const cleanTargetId = targetId.trim().toUpperCase();
+          if (!cleanTargetId) {
+             setConnectionStatus('failed');
+             setConnectionMessage('Masukkan ID User B terlebih dahulu.');
+             return;
+          }
+
+          if (!peer || !peer.open || peer.destroyed || peer.disconnected) {
+             setConnectionStatus('failed');
+             setConnectionMessage('Koneksi pemantau belum siap. Tunggu beberapa detik lalu coba lagi.');
+             return;
+          }
+
+          if (connectTimeoutRef.current) clearTimeout(connectTimeoutRef.current);
+          setConnectionStatus('connecting');
+          setConnectionMessage(`Menghubungkan ke User B ${cleanTargetId}... Pastikan User B membuka TrackMate.`);
+
+          const connection = peer.connect(cleanTargetId);
+          connectTimeoutRef.current = setTimeout(() => {
+             if (connection.open) return;
+             connection.close();
+             setConnectionStatus('failed');
+             setConnectionMessage('Koneksi timeout. Periksa ID User B, internet kedua device, lalu coba lagi.');
+          }, 15000);
+          
+          connection.on('open', () => {
+             if (connectTimeoutRef.current) clearTimeout(connectTimeoutRef.current);
+             setConnectionStatus('connected');
+             setConnectionMessage('Terhubung. Menunggu heartbeat User B...');
+             setConn(connection);
+             setHeartbeatLost(false);
+             lastHeartbeatRef.current = Date.now();
             setLastHeartbeat(lastHeartbeatRef.current);
             syncPushWatch(cleanTargetId);
          });
@@ -347,16 +379,24 @@
             }
          });
 
-         connection.on('close', () => {
-            setHeartbeatLost(true);
-            setTrackedUser(prev => ({ ...prev, online: false }));
-         });
+          connection.on('close', () => {
+             if (connectTimeoutRef.current) clearTimeout(connectTimeoutRef.current);
+             if (!connection.open) {
+                setConnectionStatus('failed');
+                setConnectionMessage('Koneksi ditutup sebelum berhasil. Pastikan User B masih online.');
+             }
+             setHeartbeatLost(true);
+             setTrackedUser(prev => ({ ...prev, online: false }));
+          });
 
-         connection.on('error', () => {
-            setHeartbeatLost(true);
-            setTrackedUser(prev => ({ ...prev, online: false }));
-         });
-      };
+          connection.on('error', (err) => {
+             if (connectTimeoutRef.current) clearTimeout(connectTimeoutRef.current);
+             setConnectionStatus('failed');
+             setConnectionMessage(`Koneksi gagal: ${err?.type || err?.message || 'jaringan tidak tersedia'}.`);
+             setHeartbeatLost(true);
+             setTrackedUser(prev => ({ ...prev, online: false }));
+          });
+       };
 
       useEffect(() => {
          if (!peer) return;
@@ -426,9 +466,18 @@
                      onChange={(e) => setTargetId(e.target.value)}
                      maxLength={4}
                   />
-                  <button onClick={connect} className="w-full bg-blue-600 hover:bg-blue-500 text-white p-4 rounded-xl font-bold transition-colors">
-                     Hubungkan
+                  <button
+                    onClick={connect}
+                    disabled={connectionStatus === 'connecting'}
+                    className={`w-full text-white p-4 rounded-xl font-bold transition-colors ${connectionStatus === 'connecting' ? 'bg-blue-400 cursor-wait' : 'bg-blue-600 hover:bg-blue-500'}`}
+                  >
+                     {connectionStatus === 'connecting' ? 'Menghubungkan...' : peer?.open ? 'Hubungkan' : 'Menyiapkan Koneksi...'}
                   </button>
+                  {connectionMessage && (
+                    <div className={`mt-3 p-3 rounded-xl text-xs font-medium border ${connectionStatus === 'failed' ? 'bg-red-50 text-red-700 border-red-200' : 'bg-blue-50 text-blue-700 border-blue-200'}`}>
+                      {connectionMessage}
+                    </div>
+                  )}
                   {canUseNotifications() && notificationPermission !== 'granted' && (
                     <button onClick={requestNotificationPermission} className="w-full mt-3 bg-slate-100 hover:bg-slate-200 text-slate-700 p-3 rounded-xl font-bold transition-colors flex items-center justify-center gap-2">
                       <i className="fa-solid fa-bell"></i>
