@@ -8,7 +8,7 @@
   },
   "scripts": {
     "dev": "node server.js",
-    "check": "node --check server.js && node --check api/health.js && node --check api/heartbeat.js && node --check api/check-heartbeats.js && node --check api/push/public-key.js && node --check api/push/subscribe.js && node --check api/_lib/supabase.js",
+    "check": "node --check server.js && node --check api/health.js && node --check api/heartbeat.js && node --check api/check-heartbeats.js && node --check api/webrtc-config.js && node --check api/push/public-key.js && node --check api/push/subscribe.js && node --check api/_lib/supabase.js",
     "health": "node -e \"fetch('http://127.0.0.1:' + (process.env.PORT || 8765) + '/api/health').then(async r => { console.log(r.status, await r.text()); process.exit(r.ok ? 0 : 1); }).catch(err => { console.error(err.message); process.exit(1); })\"",
     "start": "node server.js",
     "vapid": "node -e \"console.log(require('web-push').generateVAPIDKeys())\""

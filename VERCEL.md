@@ -38,6 +38,11 @@ This repo now includes Supabase persistence and `/api/check-heartbeats` for sche
 - `CRON_SECRET`, protects `/api/check-heartbeats` if configured
 - `HEARTBEAT_TIMEOUT_SECONDS`, default `60`
 - `NOTIFICATION_COOLDOWN_SECONDS`, default `300`
+- `TURN_URLS`, comma-separated TURN URLs for stricter NAT/mobile networks
+- `TURN_USERNAME`
+- `TURN_CREDENTIAL`
+
+TrackMate includes public STUN servers by default. For devices on different mobile networks, corporate Wi-Fi, or symmetric NAT, add a TURN service such as Twilio Network Traversal or Metered TURN and set the TURN variables above.
 
 ## Deploy Steps
 
@@ -55,3 +60,4 @@ This repo now includes Supabase persistence and `/api/check-heartbeats` for sche
 - `/api/push/subscribe` stores User A push subscriptions in Supabase.
 - `/api/heartbeat` stores User B heartbeat status in Supabase.
 - `/api/check-heartbeats` checks stale heartbeats and sends Web Push notifications.
+- `/api/webrtc-config` exposes STUN/TURN ICE server config to PeerJS.

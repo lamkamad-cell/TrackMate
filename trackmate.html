@@ -39,6 +39,10 @@
     const ROLE_STORAGE_KEY = 'trackmate_role';
     const TRACKED_PEER_ID_STORAGE_KEY = 'trackmate_tracked_peer_id';
     const MONITOR_ID_STORAGE_KEY = 'trackmate_monitor_id';
+    const DEFAULT_ICE_SERVERS = [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:global.stun.twilio.com:3478' }
+    ];
 
     const generateId = () => Math.random().toString(36).substring(2, 6).toUpperCase();
     const generateMonitorId = () => `MON-${Math.random().toString(36).substring(2, 10).toUpperCase()}`;
@@ -92,6 +96,27 @@
       return response.json().catch(() => ({}));
     }
 
+    async function loadWebRtcConfig() {
+      try {
+        const config = await fetch('./api/webrtc-config').then((response) => response.json());
+        return Array.isArray(config.iceServers) && config.iceServers.length > 0
+          ? config.iceServers
+          : DEFAULT_ICE_SERVERS;
+      } catch (err) {
+        console.warn('WebRTC config failed, using default STUN servers:', err);
+        return DEFAULT_ICE_SERVERS;
+      }
+    }
+
+    function createPeer(peerId, iceServers) {
+      const options = {
+        debug: 1,
+        config: { iceServers }
+      };
+
+      return peerId ? new Peer(peerId, options) : new Peer(options);
+    }
+
     async function showLocalNotification(title, options = {}) {
       if (!canUseNotifications() || Notification.permission !== 'granted') return;
 
@@ -137,30 +162,37 @@
       useEffect(() => {
         if (role) {
           const customId = role === 'tracked' ? getOrCreateTrackedPeerId() : null;
-          const newPeer = customId ? new Peer(customId) : new Peer();
-          
-          newPeer.on('open', (id) => {
-            setPeerId(id);
-          });
-          
-          newPeer.on('error', (err) => {
-             console.error("PeerJS Error:", err);
-             if (err.type === 'unavailable-id' && role === 'tracked') {
-               localStorage.removeItem(TRACKED_PEER_ID_STORAGE_KEY);
-               alert('ID User B bentrok. Muat ulang untuk membuat ID baru.');
-             } else if (err.type === 'peer-unavailable') {
-               alert('User B tidak ditemukan. Pastikan ID benar dan User B masih membuka TrackMate.');
-             } else if (err.type === 'network' || err.type === 'socket-error') {
-               alert('Koneksi PeerJS terputus. Periksa internet lalu coba lagi.');
-             } else {
-               alert("Koneksi gagal: " + err.type);
-             }
-          });
+          let disposed = false;
+          let newPeer;
 
-          setPeer(newPeer);
+          loadWebRtcConfig().then((iceServers) => {
+            if (disposed) return;
+
+            newPeer = createPeer(customId, iceServers);
+            newPeer.on('open', (id) => {
+              setPeerId(id);
+            });
+
+            newPeer.on('error', (err) => {
+               console.error("PeerJS Error:", err);
+               if (err.type === 'unavailable-id' && role === 'tracked') {
+                 localStorage.removeItem(TRACKED_PEER_ID_STORAGE_KEY);
+                 alert('ID User B bentrok. Muat ulang untuk membuat ID baru.');
+               } else if (err.type === 'peer-unavailable') {
+                 alert('User B tidak ditemukan. Pastikan ID benar dan User B masih membuka TrackMate.');
+               } else if (err.type === 'network' || err.type === 'socket-error') {
+                 alert('Koneksi PeerJS terputus. Periksa internet lalu coba lagi.');
+               } else {
+                 alert("Koneksi gagal: " + err.type);
+               }
+            });
+
+            setPeer(newPeer);
+          });
           
           return () => {
-             newPeer.destroy();
+             disposed = true;
+             if (newPeer) newPeer.destroy();
           }
         }
       }, [role]);

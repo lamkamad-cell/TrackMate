@@ -55,6 +55,23 @@ function readBody(req) {
   });
 }
 
+function getIceServers() {
+  const iceServers = [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:global.stun.twilio.com:3478' }
+  ];
+
+  if (process.env.TURN_URLS && process.env.TURN_USERNAME && process.env.TURN_CREDENTIAL) {
+    iceServers.push({
+      urls: process.env.TURN_URLS.split(',').map((url) => url.trim()).filter(Boolean),
+      username: process.env.TURN_USERNAME,
+      credential: process.env.TURN_CREDENTIAL
+    });
+  }
+
+  return iceServers;
+}
+
 function upsertWatch({ monitorId, targetId, subscription }) {
   if (!monitorId || !subscription?.endpoint) {
     throw new Error('monitorId and subscription are required');
@@ -201,6 +218,11 @@ const server = http.createServer(async (req, res) => {
         heartbeats: heartbeats.size,
         heartbeatTimeoutMs: HEARTBEAT_TIMEOUT_MS
       });
+      return;
+    }
+
+    if (req.method === 'GET' && requestUrl.pathname === '/api/webrtc-config') {
+      sendJson(res, 200, { iceServers: getIceServers() });
       return;
     }
 
